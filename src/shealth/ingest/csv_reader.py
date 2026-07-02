@@ -47,16 +47,22 @@ def read_samsung_csv(path: str | Path) -> SamsungCsv:
     path = Path(path)
     datatype_id, version = _read_meta_line(path)
 
-    df = pd.read_csv(
-        path,
+    # C engine (default) má robustnejší CSV stavový automat než python engine —
+    # správne zvláda polia s vnorenými úvodzovkami a novými riadkami (binning JSON,
+    # location_data), ktoré inak zlepia celý súbor do jedného „riadku".
+    read_kwargs = dict(
         skiprows=1,
         dtype=str,
         keep_default_na=True,
         na_values=[""],
         encoding="utf-8-sig",
-        engine="python",
         on_bad_lines="warn",  # nezahadzuj potichu — signalizuj problémové riadky
     )
+    try:
+        df = pd.read_csv(path, engine="c", **read_kwargs)
+    except Exception:
+        # fallback na tolerantnejší python engine pri nezvyčajnom formáte
+        df = pd.read_csv(path, engine="python", **read_kwargs)
     # zahoď úplne prázdne stĺpce (Samsung trailing čiarky)
     df = df.dropna(axis=1, how="all")
     df = df.loc[:, [c for c in df.columns if not str(c).startswith("Unnamed")]]

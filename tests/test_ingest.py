@@ -83,6 +83,26 @@ def test_csv_reader_short_columns(export_zip: Path, tmp_path: Path):
     assert "start_time" in parsed.df.columns
 
 
+def test_reader_handles_binning_with_commas_and_newlines(tmp_path: Path):
+    """Regresia: širokým súborom (heart_rate/sleep/stress) sa bin pole s čiarkami
+    a novým riadkom v úvodzovkách nesmie zlepiť do jedného riadku (python engine to
+    robil; C engine to zvláda)."""
+    csv = tmp_path / "com.samsung.shealth.tracker.heart_rate.wide.csv"
+    csv.write_text(
+        "com.samsung.shealth.tracker.heart_rate,7\n"
+        "com.samsung.health.heart_rate.start_time,com.samsung.health.heart_rate.heart_rate,"
+        "com.samsung.health.heart_rate.binning_data,com.samsung.health.heart_rate.end_time\n"
+        '2024-01-01 06:00:00.000,58,"[{a:1,b:2},\n{c:3}]",2024-01-01 06:10:00.000\n'
+        '2024-01-01 07:00:00.000,61,"[{a:5}]",2024-01-01 07:10:00.000\n'
+        '2024-01-01 08:00:00.000,64,"[{a:7}]",2024-01-01 08:10:00.000\n',
+        encoding="utf-8",
+    )
+    parsed = read_samsung_csv(csv)
+    assert len(parsed.df) == 3
+    assert "start_time" in parsed.df.columns
+    assert "heart_rate" in parsed.df.columns
+
+
 def test_parse_timestamps_drops_out_of_bounds_dates():
     """Regresia: reálne exporty občas obsahujú poškodené dátumy (napr. rok 1001),
     ktoré pretekajú nanosekundovú presnosť pandas datetime64[ns] a v staršej

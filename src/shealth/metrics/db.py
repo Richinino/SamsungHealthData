@@ -33,6 +33,20 @@ def _table(con: duckdb.DuckDBPyConnection, name: str) -> pd.DataFrame:
     return con.execute(f'SELECT * FROM "{name}"').df()
 
 
+def _table_any(con: duckdb.DuckDBPyConnection, *names: str) -> pd.DataFrame:
+    """Vráť prvú existujúcu neprázdnu tabuľku z uvedených názvov.
+
+    Reálny Samsung export drží dáta v iných tabuľkách než syntetické (napr. sumár
+    spánku v ``sleep_combined``, telesné zloženie vo ``weight``) — uprednostníme
+    reálne názvy a spadneme na syntetické.
+    """
+    for name in names:
+        df = _table(con, name)
+        if not df.empty:
+            return df
+    return pd.DataFrame()
+
+
 def _wake_day(ts: pd.Series) -> pd.Series:
     """Priraď nočnú časovú značku ku dňu prebudenia (posun +6 h)."""
     return (pd.to_datetime(ts, errors="coerce") + pd.Timedelta(hours=6)).dt.normalize()
@@ -71,26 +85,29 @@ def daily_resting_hr(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
 
 
 def daily_steps(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
-    df = _table(con, "steps_daily")
+    # reálny denný sumár je v activity_day_summary / step_daily_trend; fallback steps_daily
+    df = _table_any(con, "activity_day_summary", "step_daily_trend", "steps_daily")
     tcol = _time_col(df)
     scol = _pick(df, "steps", "step_count", "count")
     if df.empty or tcol is None or scol is None:
         return pd.DataFrame(columns=["steps", "active_minutes", "calories"])
+    acol = _pick(df, "active_time", "active_minutes")
+    ccol = _pick(df, "calorie", "calories")
     df = df.assign(
         day=_cal_day(df[tcol]),
         _steps=pd.to_numeric(df[scol], errors="coerce"),
-        _active=pd.to_numeric(df[_pick(df, "active_time", "active_minutes") or scol], errors="coerce")
-        if _pick(df, "active_time", "active_minutes") else 0,
-        _cal=pd.to_numeric(df[_pick(df, "calorie", "calories") or scol], errors="coerce")
-        if _pick(df, "calorie", "calories") else 0,
+        _active=pd.to_numeric(df[acol], errors="coerce") if acol else 0,
+        _cal=pd.to_numeric(df[ccol], errors="coerce") if ccol else 0,
     ).dropna(subset=["day"])
+    # denné sumáre môžu mať viac riadkov/deň (viac zdrojov) — ber maximum, nie súčet
     return df.groupby("day").agg(
-        steps=("_steps", "sum"), active_minutes=("_active", "sum"), calories=("_cal", "sum"))
+        steps=("_steps", "max"), active_minutes=("_active", "max"), calories=("_cal", "max"))
 
 
 def nightly_sleep(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     """Denný spánok: minúty, efektivita, skóre, midpoint (pre regularitu)."""
-    df = _table(con, "sleep")
+    # reálny sumár spánku je v sleep_combined (má start_time, sleep_score, efficiency)
+    df = _table_any(con, "sleep_combined", "sleep")
     tcol = _pick(df, "start_time", "create_time", "time")
     ecol = _pick(df, "end_time")
     if df.empty or tcol is None:
@@ -120,7 +137,11 @@ def nightly_sleep(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
         sleep_score=("_score", "max"), sleep_midpoint=("_mid", "mean"))
 
 
-_STAGE_NAMES = {1: "awake", 2: "light", 3: "deep", 4: "rem"}
+# Samsung kóduje spánkové fázy dvoma schémami — staré 1–4 aj novšie 40001–40004
+_STAGE_NAMES = {
+    1: "awake", 2: "light", 3: "deep", 4: "rem",
+    40001: "awake", 40002: "light", 40003: "deep", 40004: "rem",
+}
 
 
 def nightly_stages(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
@@ -170,12 +191,17 @@ def daily_spo2(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
 
 
 def body_series(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
-    df = _table(con, "body_composition")
-    keep = ["weight", "body_fat", "skeletal_muscle", "bmi"]
+    # reálne telesné zloženie je v tabuľke weight (body_fat, skeletal_muscle, …)
+    df = _table_any(con, "weight", "body_composition")
+    keep = ["weight", "body_fat", "skeletal_muscle", "muscle_mass", "bmi"]
     tcol = _time_col(df)
     if df.empty or tcol is None:
         return pd.DataFrame(columns=keep)
-    df = df.assign(day=_cal_day(df[tcol])).dropna(subset=["day"])
+    df = df.assign(day=_cal_day(df[tcol]))
+    for c in keep:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=["day"])
     agg = {c: (c, "mean") for c in keep if c in df.columns}
     if not agg:
         return pd.DataFrame(columns=keep)
