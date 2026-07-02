@@ -35,18 +35,39 @@ class IngestReport:
         return "\n".join(lines)
 
 
+#: rozsah dôveryhodných dátumov pre health export; mimo neho ide o poškodené/odpadové
+#: hodnoty (napr. rok 1001) — tie by inak pri uložení do datetime64[ns] pretiekli
+_MIN_TS = pd.Timestamp("1970-01-01")
+_MAX_TS = pd.Timestamp("2200-01-01")
+
+
+def _drop_out_of_bounds(ts: pd.Series) -> pd.Series:
+    """Nahraď dátumy mimo dôveryhodného rozsahu za NaT (chráni pred pretečením ns)."""
+    bad = ts.notna() & ((ts < _MIN_TS) | (ts > _MAX_TS))
+    if bad.any():
+        ts = ts.mask(bad)
+    return ts
+
+
 def _parse_timestamps(series: pd.Series) -> pd.Series:
-    """Parsuj časovú značku: buď epoch v ms (int), alebo 'YYYY-MM-DD HH:MM:SS.mmm'."""
+    """Parsuj časovú značku: buď epoch v ms (int), alebo 'YYYY-MM-DD HH:MM:SS.mmm'.
+
+    Poškodené hodnoty (mimo rozsahu roku 1970–2200) sa zahodia na NaT namiesto pádu —
+    pandas 2.x vie pri ``errors="coerce"`` vrátiť dátum v inej než nanosekundovej
+    presnosti, čo pri priamom priradení do ns-stĺpca spôsobí ``OutOfBoundsDatetime``.
+    """
     s = series.astype("string").str.strip()
     as_num = pd.to_numeric(s, errors="coerce")
     # heuristika: hodnoty > 10^11 sú epoch v ms
     is_epoch = as_num.notna() & (as_num > 1e11)
-    out = pd.to_datetime(pd.Series(pd.NaT, index=s.index), errors="coerce")
+    out = pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
     if is_epoch.any():
-        out.loc[is_epoch] = pd.to_datetime(as_num[is_epoch], unit="ms", errors="coerce")
+        epoch_ts = _drop_out_of_bounds(pd.to_datetime(as_num[is_epoch], unit="ms", errors="coerce"))
+        out.loc[is_epoch] = epoch_ts.astype("datetime64[ns]")
     text_mask = ~is_epoch
     if text_mask.any():
-        out.loc[text_mask] = pd.to_datetime(s[text_mask], errors="coerce")
+        text_ts = _drop_out_of_bounds(pd.to_datetime(s[text_mask], errors="coerce"))
+        out.loc[text_mask] = text_ts.astype("datetime64[ns]")
     return out
 
 

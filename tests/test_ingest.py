@@ -13,6 +13,7 @@ import gen_synthetic_export as gen  # noqa: E402
 
 from shealth.ingest import ingest_export  # noqa: E402
 from shealth.ingest.csv_reader import read_samsung_csv  # noqa: E402
+from shealth.ingest.load import _parse_timestamps  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -80,3 +81,49 @@ def test_csv_reader_short_columns(export_zip: Path, tmp_path: Path):
     parsed = read_samsung_csv(csv)
     assert parsed.datatype_id == "com.samsung.shealth.tracker.heart_rate"
     assert "start_time" in parsed.df.columns
+
+
+def test_parse_timestamps_drops_out_of_bounds_dates():
+    """Regresia: reálne exporty občas obsahujú poškodené dátumy (napr. rok 1001),
+    ktoré pretekajú nanosekundovú presnosť pandas datetime64[ns] a v staršej
+    implementácii spôsobovali pád (pandas.errors.OutOfBoundsDatetime)."""
+    import pandas as pd
+
+    s = pd.Series([
+        "2024-01-01 06:00:00.000",
+        "1001-01-01 00:00:00",   # poškodený text — mimo dôveryhodného rozsahu
+        None,
+        "2024-06-15 12:30:00.000",
+        "99999999999999",        # epoch v ms, ktorý po prevode pretečie
+    ])
+    out = _parse_timestamps(s)
+    assert str(out.dtype) == "datetime64[ns]"
+    assert out.iloc[0] == pd.Timestamp("2024-01-01 06:00:00")
+    assert pd.isna(out.iloc[1])
+    assert pd.isna(out.iloc[2])
+    assert out.iloc[3] == pd.Timestamp("2024-06-15 12:30:00")
+    assert pd.isna(out.iloc[4])
+
+
+def test_ingest_survives_corrupted_timestamp_row(tmp_path: Path):
+    """Riadok s poškodeným dátumom v reálnom CSV nesmie zhodiť celý ingest."""
+    csv = tmp_path / "com.samsung.shealth.stress.corrupt.csv"
+    csv.write_text(
+        "com.samsung.shealth.stress,1\n"
+        "com.samsung.health.stress.start_time,com.samsung.health.stress.end_time,"
+        "com.samsung.health.stress.score\n"
+        "2024-01-01 06:00:00.000,2024-01-01 06:10:00.000,40\n"
+        "1001-01-01 00:00:00,1001-01-01 00:10:00,99\n",
+        encoding="utf-8",
+    )
+    db = tmp_path / "corrupt.duckdb"
+    report = ingest_export(tmp_path, db_path=db)
+    assert report.tables["stress"] == 2
+    con = duckdb.connect(str(db))
+    try:
+        n_null = con.execute(
+            "SELECT count(*) FROM stress WHERE start_time IS NULL"
+        ).fetchone()[0]
+    finally:
+        con.close()
+    assert n_null == 1
