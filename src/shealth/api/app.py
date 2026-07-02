@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from shealth.api.queries import DEFAULT_DB, HealthData
@@ -56,6 +56,21 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         @app.get("/")
         def index() -> FileResponse:
             return FileResponse(WEB_DIST / "index.html")
+    else:
+        @app.get("/", response_class=HTMLResponse)
+        def not_built() -> str:
+            return (
+                "<html><body style='font-family:system-ui;max-width:640px;margin:60px auto;"
+                "line-height:1.6;color:#111'>"
+                "<h2>⚙️ Frontend ešte nie je zbuildený</h2>"
+                "<p>Backend (API) beží, ale chýba <code>web/dist</code>. Zbuildi frontend:</p>"
+                "<pre style='background:#f4f4f2;padding:12px;border-radius:8px'>"
+                "cd web\nnpm install\nnpm run build\ncd ..</pre>"
+                "<p>Potom obnov túto stránku. Dáta si zatiaľ vieš pozrieť aj priamo cez API: "
+                "<a href='/api/summary?range=30d'>/api/summary</a>, "
+                "<a href='/api/timeseries?range=30d'>/api/timeseries</a>.</p>"
+                "</body></html>"
+            )
 
     return app
 
