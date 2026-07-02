@@ -12,6 +12,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
+    """Rozbaľ ZIP s ochranou proti path traversal (Zip Slip).
+
+    Overí, že každý člen archívu po rozvinutí zostáva vnútri ``target``; inak abortuje.
+    """
+    target = target.resolve()
+    for member in zf.namelist():
+        dest = (target / member).resolve()
+        if dest != target and target not in dest.parents:
+            raise ValueError(f"Nebezpečná cesta v archíve (Zip Slip): {member!r}")
+    zf.extractall(target)
+
+
 @dataclass
 class ExportLayout:
     """Umiestnenie rozbaleného exportu."""
@@ -56,7 +69,7 @@ def locate_export(source: str | Path, extract_to: str | Path | None = None) -> E
         target = Path(extract_to) if extract_to else source.parent / "export"
         target.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(source) as zf:
-            zf.extractall(target)
+            _safe_extractall(zf, target)
         base = target
     elif source.is_dir():
         base = source

@@ -55,7 +55,7 @@ def read_samsung_csv(path: str | Path) -> SamsungCsv:
         na_values=[""],
         encoding="utf-8-sig",
         engine="python",
-        on_bad_lines="skip",
+        on_bad_lines="warn",  # nezahadzuj potichu — signalizuj problémové riadky
     )
     # zahoď úplne prázdne stĺpce (Samsung trailing čiarky)
     df = df.dropna(axis=1, how="all")

@@ -121,8 +121,10 @@ def ingest_export(
                         lambda v: None if v is None else _json_dumps(v)
                     )
             con.register("df_tmp", combined)
-            con.execute(f'CREATE OR REPLACE TABLE "{table}" AS SELECT * FROM df_tmp')
-            con.unregister("df_tmp")
+            try:
+                con.execute(f'CREATE OR REPLACE TABLE "{table}" AS SELECT * FROM df_tmp')
+            finally:
+                con.unregister("df_tmp")
             tables[table] = len(combined)
     finally:
         con.close()
