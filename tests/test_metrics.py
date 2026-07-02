@@ -15,8 +15,22 @@ import gen_synthetic_export as gen  # noqa: E402
 
 from shealth.ingest import ingest_export  # noqa: E402
 from shealth.metrics import build_daily_metrics  # noqa: E402
+from shealth.metrics.db import _to_dt  # noqa: E402
 from shealth.metrics.load import acwr, daily_load, trimp  # noqa: E402
 from shealth.metrics.scoring import sleep_debt  # noqa: E402
+
+
+def test_to_dt_handles_epoch_ms_text_and_datetime():
+    """Samsung časy: epoch v ms (reťazec), ISO text, už-datetime, aj odpad → NaT."""
+    s = pd.Series(["1704142800000", "2024-06-15 12:30:00.000", "junk", None,
+                   "99999999999999999"])
+    out = _to_dt(s)
+    assert out.iloc[0] == pd.Timestamp("2024-01-01 21:00:00")  # epoch ms
+    assert out.iloc[1] == pd.Timestamp("2024-06-15 12:30:00")
+    assert pd.isna(out.iloc[2]) and pd.isna(out.iloc[3]) and pd.isna(out.iloc[4])
+    # už-parsovaný datetime stĺpec prejde nezmenený (okrem orezu rozsahu)
+    dt = pd.Series(pd.to_datetime(["2024-01-01", "2024-01-02"]))
+    assert list(_to_dt(dt)) == list(dt)
 
 
 # ---- TRIMP: kontrola proti ručne dopočítanej hodnote ----

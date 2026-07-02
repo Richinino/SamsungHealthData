@@ -47,17 +47,49 @@ def _table_any(con: duckdb.DuckDBPyConnection, *names: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+_MIN_TS = pd.Timestamp("1970-01-01")
+_MAX_TS = pd.Timestamp("2200-01-01")
+
+
+def _to_dt(ts: pd.Series) -> pd.Series:
+    """Robustné parsovanie času: epoch v ms (Samsung ich tak často ukladá) aj text.
+
+    Neregistrované tabuľky (sleep_combined, weight, activity_day_summary…) držia časy
+    ako reťazce; mnohé sú epoch v milisekundách (napr. ``1704142800000``), ktoré by
+    obyčajné ``to_datetime`` zmenilo na NaT. Poškodené/mimo-rozsahu hodnoty → NaT.
+    """
+    s0 = pd.Series(ts)
+    # už-parsovaný datetime stĺpec (registrované tabuľky z ingestu) — len orež rozsah
+    if pd.api.types.is_datetime64_any_dtype(s0):
+        return s0.where(s0.notna() & (s0 >= _MIN_TS) & (s0 <= _MAX_TS))
+    idx = s0.index
+    s = s0.reset_index(drop=True)
+    num = pd.to_numeric(s, errors="coerce")
+    is_epoch = num.notna() & (num > 1e11)
+    # epoch v ms: clampni na bezpečný rozsah ns (~1970–2200) pred prevodom,
+    # aby extrémne hodnoty nepretiekli datetime64[ns]
+    epoch = num.where(is_epoch)
+    epoch = epoch.where((epoch > 0) & (epoch < 7.2e12))  # ~ do roku 2198
+    dt_epoch = pd.to_datetime(epoch, unit="ms", errors="coerce")
+    dt_text = pd.to_datetime(s.where(~is_epoch), errors="coerce", format="mixed")
+    out = dt_epoch.fillna(dt_text)
+    out = out.where(out.notna() & (out >= _MIN_TS) & (out <= _MAX_TS))
+    out.index = idx
+    return out
+
+
 def _wake_day(ts: pd.Series) -> pd.Series:
     """Priraď nočnú časovú značku ku dňu prebudenia (posun +6 h)."""
-    return (pd.to_datetime(ts, errors="coerce") + pd.Timedelta(hours=6)).dt.normalize()
+    return (_to_dt(ts) + pd.Timedelta(hours=6)).dt.normalize()
 
 
 def _cal_day(ts: pd.Series) -> pd.Series:
-    return pd.to_datetime(ts, errors="coerce").dt.normalize()
+    return _to_dt(ts).dt.normalize()
 
 
 # kandidáti na časový stĺpec — reálne exporty používajú rôzne názvy
-_TIME_CANDIDATES = ("start_time", "create_time", "day_time", "time", "start", "update_time")
+_TIME_CANDIDATES = ("start_time", "create_time", "day_time", "time", "start",
+                    "end_time", "update_time")
 
 
 def _pick(df: pd.DataFrame, *candidates: str) -> str | None:
@@ -113,8 +145,8 @@ def nightly_sleep(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     if df.empty or tcol is None:
         return pd.DataFrame(columns=["sleep_minutes", "sleep_efficiency",
                                      "sleep_score", "sleep_midpoint"])
-    start = pd.to_datetime(df[tcol], errors="coerce")
-    end = pd.to_datetime(df[ecol], errors="coerce") if ecol else start
+    start = _to_dt(df[tcol])
+    end = _to_dt(df[ecol]) if ecol else start
     span_min = (end - start).dt.total_seconds() / 60
     dcol = _pick(df, "sleep_duration", "duration")
     if dcol:
@@ -152,9 +184,9 @@ def nightly_stages(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     scol = _pick(df, "stage")
     if df.empty or tcol is None or scol is None:
         return pd.DataFrame(columns=cols)
-    start = pd.to_datetime(df[tcol], errors="coerce")
+    start = _to_dt(df[tcol])
     ecol = _pick(df, "end_time")
-    end = pd.to_datetime(df[ecol], errors="coerce") if ecol else start
+    end = _to_dt(df[ecol]) if ecol else start
     dur = (end - start).dt.total_seconds() / 60
     df = df.assign(day=_wake_day(start), dur=dur,
                    stage_name=pd.to_numeric(df[scol], errors="coerce").map(_STAGE_NAMES).fillna("light"))
