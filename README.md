@@ -53,13 +53,34 @@ uv run shealth ingest data/synthetic_export.zip
 #   ...alebo tvoj reálny export:
 uv run shealth ingest data/export.zip
 
-# 4) testy
+# 4) vypočítaj odvodené denné metriky (zapíše tabuľku metrics_daily)
+uv run shealth metrics --tail 7
+
+# 5) testy
 uv run pytest -q
 ```
 
 Výsledok ingestu je `data/health.duckdb` s normalizovanými tabuľkami
 (`heart_rate`, `steps_daily`, `sleep`, `sleep_stage`, `stress`, `spo2`, `exercise`,
 `body_composition`, …).
+
+## Odvodené metriky (Fáza 2)
+
+`shealth metrics` zostaví dennú tabuľku **`metrics_daily`** s transparentnými vzorcami
+(žiadna čierna skrinka) — kód v `src/shealth/metrics/`:
+
+- **Recovery / Readiness skóre (0–100)** — vážený priemer: pokojový HR vs. osobný baseline
+  (30 %), spánok (35 %), stres (20 %), tréningová záťaž/ACWR (15 %); chýbajúce zložky sa
+  prenormujú (`scoring.py`).
+- **Training load** — Banister **TRIMP** z workoutov + **ACWR** (7-dňový / 28-dňový load;
+  sladké pásmo ≈ 0.8–1.3) (`load.py`).
+- **Sleep debt** — kumulatívny deficit oproti cieľu (default 8 h) za 14 nocí; **sleep
+  regularity** = smerodajná odchýlka stredu spánku (`scoring.py`).
+- **Spánkové fázy** — podiel deep/rem/light/awake na noc.
+- **Body-composition delta** — zmena hmotnosti za 7 / 30 dní; pokojový HR baseline; stres trend.
+
+Parametre (pohlavie, `hr_max`, cieľ spánku) sú konfigurovateľné cez CLI alebo
+`MetricParams`.
 
 ## AI vrstva
 
@@ -109,7 +130,7 @@ data/          # export.zip + health.duckdb (gitignored)
 ## Roadmap
 
 - [x] **Fáza 1** — ingest: export → DuckDB, syntetické dáta, testy
-- [ ] **Fáza 2** — derived metrics engine (recovery, training load, sleep debt, HRV baseline)
+- [x] **Fáza 2** — derived metrics engine (readiness, training load/ACWR, sleep debt, regularita)
 - [ ] **Fáza 3** — FastAPI + React/Recharts dashboard
 - [ ] **Fáza 4** — AI: LLM kouč (Anthropic) + ML forecast/anomaly
 - [ ] **Fáza 5** — MCP server pre Claude Desktop
