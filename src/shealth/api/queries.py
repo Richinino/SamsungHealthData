@@ -140,36 +140,55 @@ class HealthData:
             ).fetchone()
             if not has:
                 return {"workouts": []}
-            df = con.execute("SELECT * FROM exercise ORDER BY start_time DESC").df()
+            df = con.execute('SELECT * FROM exercise').df()
         finally:
             con.close()
         if df.empty:
             return {"workouts": []}
-        df["start_time"] = pd.to_datetime(df["start_time"])
+
+        def pick(*names):
+            for n in names:
+                if n in df.columns:
+                    return n
+            return None
+
+        tcol = pick("start_time", "create_time", "time")
+        if tcol is None:
+            return {"workouts": []}
+        df[tcol] = pd.to_datetime(df[tcol], errors="coerce")
+        df = df.dropna(subset=[tcol]).sort_values(tcol, ascending=False)
         if rng != "all":
             days = {"7d": 7, "30d": 30, "90d": 90}.get(rng, 90)
-            cutoff = df["start_time"].max() - pd.Timedelta(days=days - 1)
-            df = df[df["start_time"] >= cutoff]
+            cutoff = df[tcol].max() - pd.Timedelta(days=days - 1)
+            df = df[df[tcol] >= cutoff]
+
+        c_dur = pick("duration")
+        c_dist = pick("distance")
+        c_type = pick("exercise_type")
+        c_cal = pick("calorie", "calories")
+        c_mhr = pick("mean_hr", "mean_heart_rate")
+        c_xhr = pick("max_hr", "max_heart_rate")
         m = self.metrics()
         hr_rest = float(m["resting_hr"].median()) if "resting_hr" in m and not m.empty else 60.0
         rows = []
         for _, x in df.iterrows():
-            dur_min = (x["duration"] / 1000 / 60) if pd.notna(x.get("duration")) else None
-            dist_m = x.get("distance")
-            pace = None
-            if dur_min and dist_m and dist_m > 0:
-                pace = dur_min / (dist_m / 1000)  # min/km
-            load = trimp(x.get("mean_hr", float("nan")), dur_min or 0, hr_rest,
-                         DEFAULT_PARAMS.hr_max, DEFAULT_PARAMS.sex)
+            dur_min = (x[c_dur] / 1000 / 60) if c_dur and pd.notna(x.get(c_dur)) else None
+            dist_m = x.get(c_dist) if c_dist else None
+            dist_m = dist_m if pd.notna(dist_m) else None
+            pace = dur_min / (dist_m / 1000) if (dur_min and dist_m and dist_m > 0) else None
+            mhr = x.get(c_mhr) if c_mhr else None
+            load = trimp(float(mhr) if pd.notna(mhr) else float("nan"), dur_min or 0,
+                         hr_rest, DEFAULT_PARAMS.hr_max, DEFAULT_PARAMS.sex)
+            tval = x.get(c_type) if c_type else None
             rows.append({
-                "date": str(x["start_time"].date()),
-                "type": EXERCISE_NAMES.get(int(x["exercise_type"]) if pd.notna(x.get("exercise_type")) else 0, "Tréning"),
+                "date": str(x[tcol].date()),
+                "type": EXERCISE_NAMES.get(int(tval) if pd.notna(tval) else 0, "Tréning"),
                 "duration_min": _clean(round(dur_min, 1)) if dur_min else None,
                 "distance_km": _clean(round(dist_m / 1000, 2)) if dist_m else None,
                 "pace_min_km": _clean(round(pace, 2)) if pace else None,
-                "calorie": _clean(round(float(x["calorie"]), 0)) if pd.notna(x.get("calorie")) else None,
-                "mean_hr": _clean(int(x["mean_hr"])) if pd.notna(x.get("mean_hr")) else None,
-                "max_hr": _clean(int(x["max_hr"])) if pd.notna(x.get("max_hr")) else None,
+                "calorie": _clean(round(float(x[c_cal]), 0)) if c_cal and pd.notna(x.get(c_cal)) else None,
+                "mean_hr": _clean(int(mhr)) if pd.notna(mhr) else None,
+                "max_hr": _clean(int(x[c_xhr])) if c_xhr and pd.notna(x.get(c_xhr)) else None,
                 "trimp": _clean(round(load, 1)),
             })
         return {"workouts": rows}

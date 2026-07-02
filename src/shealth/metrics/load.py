@@ -32,20 +32,33 @@ def trimp(mean_hr: float, duration_min: float, hr_rest: float, hr_max: float,
     return float(duration_min * hrr * factor)
 
 
+def _pick(df: pd.DataFrame, *candidates: str) -> str | None:
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
 def daily_load(exercise: pd.DataFrame, hr_rest: float, hr_max: float,
                sex: str = "male") -> pd.Series:
     """Súčet TRIMP na deň (index = deň, hodnota = load). Prázdna séria ak niet dát."""
-    if exercise.empty:
+    tcol = _pick(exercise, "start_time", "create_time", "time")
+    if exercise.empty or tcol is None:
         return pd.Series(dtype="float64", name="load")
     ex = exercise.copy()
-    day = (pd.to_datetime(ex["start_time"])).dt.normalize()
-    # trvanie: exercise.duration je v ms; fallback na (end-start)
-    if "duration" in ex.columns and ex["duration"].notna().any():
-        dur_min = pd.to_numeric(ex["duration"], errors="coerce") / 1000 / 60
+    start = pd.to_datetime(ex[tcol], errors="coerce")
+    day = start.dt.normalize()
+    # trvanie: exercise.duration býva v ms; fallback na (end-start)
+    dcol = _pick(ex, "duration")
+    ecol = _pick(ex, "end_time")
+    if dcol and ex[dcol].notna().any():
+        dur_min = pd.to_numeric(ex[dcol], errors="coerce") / 1000 / 60
+    elif ecol:
+        dur_min = (pd.to_datetime(ex[ecol], errors="coerce") - start).dt.total_seconds() / 60
     else:
-        dur_min = (pd.to_datetime(ex["end_time"]) - pd.to_datetime(ex["start_time"])
-                   ).dt.total_seconds() / 60
-    mean_hr = pd.to_numeric(ex.get("mean_hr"), errors="coerce")
+        dur_min = pd.Series(0.0, index=ex.index)
+    hrcol = _pick(ex, "mean_hr", "mean_heart_rate", "heart_rate")
+    mean_hr = pd.to_numeric(ex[hrcol], errors="coerce") if hrcol else pd.Series(np.nan, index=ex.index)
     loads = [
         trimp(h, d, hr_rest, hr_max, sex)
         for h, d in zip(mean_hr.to_numpy(), dur_min.to_numpy())

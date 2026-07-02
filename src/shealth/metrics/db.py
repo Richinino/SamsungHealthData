@@ -35,62 +35,89 @@ def _table(con: duckdb.DuckDBPyConnection, name: str) -> pd.DataFrame:
 
 def _wake_day(ts: pd.Series) -> pd.Series:
     """Priraď nočnú časovú značku ku dňu prebudenia (posun +6 h)."""
-    return (pd.to_datetime(ts) + pd.Timedelta(hours=6)).dt.normalize()
+    return (pd.to_datetime(ts, errors="coerce") + pd.Timedelta(hours=6)).dt.normalize()
 
 
 def _cal_day(ts: pd.Series) -> pd.Series:
-    return pd.to_datetime(ts).dt.normalize()
+    return pd.to_datetime(ts, errors="coerce").dt.normalize()
+
+
+# kandidáti na časový stĺpec — reálne exporty používajú rôzne názvy
+_TIME_CANDIDATES = ("start_time", "create_time", "day_time", "time", "start", "update_time")
+
+
+def _pick(df: pd.DataFrame, *candidates: str) -> str | None:
+    """Vráť prvý existujúci stĺpec z kandidátov (alebo None)."""
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
+def _time_col(df: pd.DataFrame) -> str | None:
+    return _pick(df, *_TIME_CANDIDATES)
 
 
 def daily_resting_hr(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     """Denný pokojový HR (proxy: min bpm) a priemerný HR."""
     df = _table(con, "heart_rate")
-    if df.empty:
+    tcol = _time_col(df)
+    vcol = _pick(df, "bpm", "heart_rate", "value")
+    if df.empty or tcol is None or vcol is None:
         return pd.DataFrame(columns=["resting_hr", "hr_avg"])
-    df = df.assign(day=_cal_day(df["start_time"]))
-    out = df.groupby("day").agg(resting_hr=("bpm", "min"), hr_avg=("bpm", "mean"))
-    return out
+    df = df.assign(day=_cal_day(df[tcol]), _v=pd.to_numeric(df[vcol], errors="coerce"))
+    df = df.dropna(subset=["day", "_v"])
+    return df.groupby("day").agg(resting_hr=("_v", "min"), hr_avg=("_v", "mean"))
 
 
 def daily_steps(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     df = _table(con, "steps_daily")
-    if df.empty:
+    tcol = _time_col(df)
+    scol = _pick(df, "steps", "step_count", "count")
+    if df.empty or tcol is None or scol is None:
         return pd.DataFrame(columns=["steps", "active_minutes", "calories"])
-    df = df.assign(day=_cal_day(df["day_time"]))
-    active = df["active_time"] if "active_time" in df else 0
-    df = df.assign(active_minutes=active)
-    out = df.groupby("day").agg(
-        steps=("steps", "sum"),
-        active_minutes=("active_minutes", "sum"),
-        calories=("calorie", "sum"),
-    )
-    return out
+    df = df.assign(
+        day=_cal_day(df[tcol]),
+        _steps=pd.to_numeric(df[scol], errors="coerce"),
+        _active=pd.to_numeric(df[_pick(df, "active_time", "active_minutes") or scol], errors="coerce")
+        if _pick(df, "active_time", "active_minutes") else 0,
+        _cal=pd.to_numeric(df[_pick(df, "calorie", "calories") or scol], errors="coerce")
+        if _pick(df, "calorie", "calories") else 0,
+    ).dropna(subset=["day"])
+    return df.groupby("day").agg(
+        steps=("_steps", "sum"), active_minutes=("_active", "sum"), calories=("_cal", "sum"))
 
 
 def nightly_sleep(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     """Denný spánok: minúty, efektivita, skóre, midpoint (pre regularitu)."""
     df = _table(con, "sleep")
-    if df.empty:
+    tcol = _pick(df, "start_time", "create_time", "time")
+    ecol = _pick(df, "end_time")
+    if df.empty or tcol is None:
         return pd.DataFrame(columns=["sleep_minutes", "sleep_efficiency",
                                      "sleep_score", "sleep_midpoint"])
-    start = pd.to_datetime(df["start_time"])
-    end = pd.to_datetime(df["end_time"])
-    minutes = df["sleep_duration"].where(
-        df.get("sleep_duration").notna() if "sleep_duration" in df else False,
-        (end - start).dt.total_seconds() / 60,
-    )
-    # midpoint ako desatinné hodiny od 18:00 (kvôli prechodu cez polnoc)
+    start = pd.to_datetime(df[tcol], errors="coerce")
+    end = pd.to_datetime(df[ecol], errors="coerce") if ecol else start
+    span_min = (end - start).dt.total_seconds() / 60
+    dcol = _pick(df, "sleep_duration", "duration")
+    if dcol:
+        dur = pd.to_numeric(df[dcol], errors="coerce")
+        # duration býva v minútach; ak vyzerá ako ms, preveď
+        dur = dur.where(dur < 1000, dur / 60000)
+        minutes = dur.fillna(span_min)
+    else:
+        minutes = span_min
     mid = start + (end - start) / 2
     midpoint_h = ((mid - mid.dt.normalize()).dt.total_seconds() / 3600 - 18) % 24
-    df = df.assign(day=_wake_day(df["start_time"]), sleep_minutes=minutes,
-                   sleep_midpoint=midpoint_h)
-    out = df.groupby("day").agg(
-        sleep_minutes=("sleep_minutes", "sum"),
-        sleep_efficiency=("efficiency", "mean") if "efficiency" in df else ("sleep_minutes", "size"),
-        sleep_score=("score", "max") if "score" in df else ("sleep_minutes", "size"),
-        sleep_midpoint=("sleep_midpoint", "mean"),
-    )
-    return out
+    eff_col = _pick(df, "efficiency")
+    score_col = _pick(df, "score", "sleep_score")
+    df = df.assign(day=_wake_day(start), _min=minutes, _mid=midpoint_h,
+                   _eff=pd.to_numeric(df[eff_col], errors="coerce") if eff_col else np.nan,
+                   _score=pd.to_numeric(df[score_col], errors="coerce") if score_col else np.nan)
+    df = df.dropna(subset=["day"])
+    return df.groupby("day").agg(
+        sleep_minutes=("_min", "sum"), sleep_efficiency=("_eff", "mean"),
+        sleep_score=("_score", "max"), sleep_midpoint=("_mid", "mean"))
 
 
 _STAGE_NAMES = {1: "awake", 2: "light", 3: "deep", 4: "rem"}
@@ -100,13 +127,17 @@ def nightly_stages(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     """Podiel spánkových fáz (%) na noc (deep/rem/light/awake)."""
     df = _table(con, "sleep_stage")
     cols = [f"{n}_pct" for n in _STAGE_NAMES.values()]
-    if df.empty:
+    tcol = _pick(df, "start_time", "create_time", "time")
+    scol = _pick(df, "stage")
+    if df.empty or tcol is None or scol is None:
         return pd.DataFrame(columns=cols)
-    start = pd.to_datetime(df["start_time"])
-    end = pd.to_datetime(df["end_time"])
+    start = pd.to_datetime(df[tcol], errors="coerce")
+    ecol = _pick(df, "end_time")
+    end = pd.to_datetime(df[ecol], errors="coerce") if ecol else start
     dur = (end - start).dt.total_seconds() / 60
-    df = df.assign(day=_wake_day(df["start_time"]), dur=dur,
-                   stage_name=df["stage"].map(_STAGE_NAMES).fillna("light"))
+    df = df.assign(day=_wake_day(start), dur=dur,
+                   stage_name=pd.to_numeric(df[scol], errors="coerce").map(_STAGE_NAMES).fillna("light"))
+    df = df.dropna(subset=["day"])
     piv = df.pivot_table(index="day", columns="stage_name", values="dur",
                          aggfunc="sum", fill_value=0.0)
     total = piv.sum(axis=1).replace(0, np.nan)
@@ -118,27 +149,36 @@ def nightly_stages(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
 
 def daily_stress(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     df = _table(con, "stress")
-    if df.empty:
+    tcol = _time_col(df)
+    scol = _pick(df, "score", "value")
+    if df.empty or tcol is None or scol is None:
         return pd.DataFrame(columns=["stress_avg"])
-    df = df.assign(day=_cal_day(df["start_time"]))
-    return df.groupby("day").agg(stress_avg=("score", "mean"))
+    df = df.assign(day=_cal_day(df[tcol]), _v=pd.to_numeric(df[scol], errors="coerce"))
+    df = df.dropna(subset=["day", "_v"])
+    return df.groupby("day").agg(stress_avg=("_v", "mean"))
 
 
 def daily_spo2(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     df = _table(con, "spo2")
-    if df.empty:
+    tcol = _time_col(df)
+    scol = _pick(df, "spo2", "oxygen_saturation", "value")
+    if df.empty or tcol is None or scol is None:
         return pd.DataFrame(columns=["spo2_min", "spo2_avg"])
-    df = df.assign(day=_cal_day(df["start_time"]))
-    return df.groupby("day").agg(spo2_min=("spo2", "min"), spo2_avg=("spo2", "mean"))
+    df = df.assign(day=_cal_day(df[tcol]), _v=pd.to_numeric(df[scol], errors="coerce"))
+    df = df.dropna(subset=["day", "_v"])
+    return df.groupby("day").agg(spo2_min=("_v", "min"), spo2_avg=("_v", "mean"))
 
 
 def body_series(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     df = _table(con, "body_composition")
     keep = ["weight", "body_fat", "skeletal_muscle", "bmi"]
-    if df.empty:
+    tcol = _time_col(df)
+    if df.empty or tcol is None:
         return pd.DataFrame(columns=keep)
-    df = df.assign(day=_cal_day(df["start_time"]))
+    df = df.assign(day=_cal_day(df[tcol])).dropna(subset=["day"])
     agg = {c: (c, "mean") for c in keep if c in df.columns}
+    if not agg:
+        return pd.DataFrame(columns=keep)
     return df.groupby("day").agg(**agg)
 
 

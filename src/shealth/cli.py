@@ -23,6 +23,9 @@ def main(argv: list[str] | None = None) -> int:
     p_met.add_argument("--target-sleep-min", type=float, default=480.0)
     p_met.add_argument("--tail", type=int, default=7, help="koľko posledných dní vypísať")
 
+    p_sch = sub.add_parser("schema", help="Vypíš tabuľky, stĺpce a počty riadkov v DuckDB")
+    p_sch.add_argument("--db", type=Path, default=Path("data/health.duckdb"))
+
     p_srv = sub.add_parser("serve", help="Spusti dashboard (FastAPI + zbuildený frontend)")
     p_srv.add_argument("--db", type=Path, default=Path("data/health.duckdb"))
     p_srv.add_argument("--host", default="127.0.0.1")
@@ -44,6 +47,24 @@ def main(argv: list[str] | None = None) -> int:
                             "load", "acwr", "readiness"] if c in daily.columns]
         print(f"metrics_daily: {len(daily)} dní zapísaných do {args.db}")
         print(daily[cols].tail(args.tail).round(1).to_string())
+        return 0
+    if args.cmd == "schema":
+        import duckdb
+
+        con = duckdb.connect(str(args.db))
+        try:
+            tables = [r[0] for r in con.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema='main' ORDER BY table_name").fetchall()]
+            for t in tables:
+                n = con.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0]
+                cols = [r[0] for r in con.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name=? ORDER BY ordinal_position", [t]).fetchall()]
+                print(f"\n=== {t}  ({n} riadkov) ===")
+                print("  stĺpce:", ", ".join(cols))
+        finally:
+            con.close()
         return 0
     if args.cmd == "serve":
         import os
