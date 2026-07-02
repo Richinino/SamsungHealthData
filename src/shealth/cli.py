@@ -23,6 +23,11 @@ def main(argv: list[str] | None = None) -> int:
     p_met.add_argument("--target-sleep-min", type=float, default=480.0)
     p_met.add_argument("--tail", type=int, default=7, help="koľko posledných dní vypísať")
 
+    p_srv = sub.add_parser("serve", help="Spusti dashboard (FastAPI + zbuildený frontend)")
+    p_srv.add_argument("--db", type=Path, default=Path("data/health.duckdb"))
+    p_srv.add_argument("--host", default="127.0.0.1")
+    p_srv.add_argument("--port", type=int, default=8000)
+
     args = ap.parse_args(argv)
 
     if args.cmd == "ingest":
@@ -39,6 +44,15 @@ def main(argv: list[str] | None = None) -> int:
                             "load", "acwr", "readiness"] if c in daily.columns]
         print(f"metrics_daily: {len(daily)} dní zapísaných do {args.db}")
         print(daily[cols].tail(args.tail).round(1).to_string())
+        return 0
+    if args.cmd == "serve":
+        import os
+
+        import uvicorn
+
+        os.environ["SHEALTH_DB"] = str(args.db)
+        print(f"Dashboard: http://{args.host}:{args.port}  (DB: {args.db})")
+        uvicorn.run("shealth.api.app:app", host=args.host, port=args.port)
         return 0
     return 1
 

@@ -56,9 +56,16 @@ uv run shealth ingest data/export.zip
 # 4) vypočítaj odvodené denné metriky (zapíše tabuľku metrics_daily)
 uv run shealth metrics --tail 7
 
-# 5) testy
+# 5) zbuildi frontend a spusti dashboard
+(cd web && npm install && npm run build)
+uv run shealth serve            # → http://127.0.0.1:8000
+
+# 6) testy
 uv run pytest -q
 ```
+
+Pri vývoji frontendu: `cd web && npm run dev` (Vite na :5173, proxuje `/api` na :8000,
+takže bež paralelne `uv run shealth serve`).
 
 Výsledok ingestu je `data/health.duckdb` s normalizovanými tabuľkami
 (`heart_rate`, `steps_daily`, `sleep`, `sleep_stage`, `stress`, `spo2`, `exercise`,
@@ -81,6 +88,22 @@ Výsledok ingestu je `data/health.duckdb` s normalizovanými tabuľkami
 
 Parametre (pohlavie, `hr_max`, cieľ spánku) sú konfigurovateľné cez CLI alebo
 `MetricParams`.
+
+## Dashboard (Fáza 3)
+
+Lokálny web dashboard — **FastAPI** backend (`src/shealth/api/`) číta `metrics_daily` a
+surové tabuľky z DuckDB a servuje **React + Recharts** SPA (`web/`). Postavený na dataviz
+design systéme (validovaná paleta, prístupné grafy), **dark aj light** téma (prepínač,
+uložený v `localStorage`). Štyri taby:
+
+- **Prehľad** — readiness ring + rozklad zložiek, KPI dlaždice so sparklinami, trendy
+  (readiness, pokojový HR vs. baseline, spánkové fázy, ACWR, training load, hmotnosť).
+- **Tréningy** — tabuľka workoutov (trvanie, vzdialenosť, tempo, HR, TRIMP).
+- **Insights** — korelačná heatmapa metrík + scatter spánok → readiness nasledujúci deň.
+- **Ciele** — progres k cieľom (7-dňový priemer) + streak dní s ≥ 10 000 krokmi.
+
+API endpointy: `/api/summary`, `/api/timeseries`, `/api/workouts`, `/api/correlations`,
+`/api/goals` (všetky s `?range=7d|30d|90d|all`).
 
 ## AI vrstva
 
@@ -118,10 +141,10 @@ pyproject.toml
 src/shealth/
   ingest/      # unzip, csv_reader, json_decode, datatypes, load
   metrics/     # (Fáza 2) recovery, training load, sleep debt, HRV baseline
-  api/         # (Fáza 3) FastAPI backend
+  api/         # FastAPI backend (app, queries)
   ai/          # (Fáza 4) LLM kouč + ML forecast/anomaly
   mcp_server.py# (Fáza 5) MCP server pre Claude Desktop
-web/           # (Fáza 3) Vite + React + Recharts dashboard
+web/           # Vite + React + Recharts dashboard (src/, dist/ po builde)
 scripts/gen_synthetic_export.py
 tests/
 data/          # export.zip + health.duckdb (gitignored)
@@ -131,7 +154,7 @@ data/          # export.zip + health.duckdb (gitignored)
 
 - [x] **Fáza 1** — ingest: export → DuckDB, syntetické dáta, testy
 - [x] **Fáza 2** — derived metrics engine (readiness, training load/ACWR, sleep debt, regularita)
-- [ ] **Fáza 3** — FastAPI + React/Recharts dashboard
+- [x] **Fáza 3** — FastAPI + React/Recharts dashboard (dark/light, 4 taby)
 - [ ] **Fáza 4** — AI: LLM kouč (Anthropic) + ML forecast/anomaly
 - [ ] **Fáza 5** — MCP server pre Claude Desktop
 - [ ] **Neskôr** — live ingest cez Samsung Health Data SDK / Health Connect; raw PPG/ECG cez Privileged SDK
