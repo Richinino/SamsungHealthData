@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Data (personal — never commit health exports)
+data/*.zip
+data/*.duckdb
+data/export/
+!data/.gitkeep
+
+# Node / frontend
+web/node_modules/
+web/dist/
+
+# Env / secrets
+.env
+*.local
+
+# OS
+.DS_Store
