@@ -103,6 +103,27 @@ def test_reader_handles_binning_with_commas_and_newlines(tmp_path: Path):
     assert "heart_rate" in parsed.df.columns
 
 
+def test_reader_aligns_columns_with_trailing_comma(tmp_path: Path):
+    """Regresia: Samsung dáva na koniec dátových riadkov čiarku navyše, takže riadky
+    majú o pole viac než hlavička. Pandas by inak vzal prvý stĺpec ako index a posunul
+    všetky stĺpce (start_time by obsahoval čísla, sleep_score názvy balíkov). Pozičné
+    čítanie musí názvy priradiť na správne stĺpce."""
+    csv = tmp_path / "com.samsung.shealth.sleep_combined.x.csv"
+    csv.write_text(
+        "com.samsung.shealth.sleep_combined,1\n"
+        "com.samsung.health.sleep_combined.start_time,com.samsung.health.sleep_combined.sleep_score,"
+        "com.samsung.health.sleep_combined.efficiency,com.samsung.health.sleep_combined.deviceuuid\n"
+        "2024-01-01 23:00:00.000,80,88,uuid-1,\n"   # trailing čiarka = pole navyše
+        "2024-01-02 23:10:00.000,72,90,uuid-2,\n",
+        encoding="utf-8",
+    )
+    parsed = read_samsung_csv(csv)
+    assert list(parsed.df.columns) == ["start_time", "sleep_score", "efficiency", "deviceuuid"]
+    assert parsed.df.iloc[0]["start_time"] == "2024-01-01 23:00:00.000"
+    assert parsed.df.iloc[0]["sleep_score"] == "80"
+    assert parsed.df.iloc[0]["deviceuuid"] == "uuid-1"
+
+
 def test_parse_timestamps_drops_out_of_bounds_dates():
     """Regresia: reálne exporty občas obsahujú poškodené dátumy (napr. rok 1001),
     ktoré pretekajú nanosekundovú presnosť pandas datetime64[ns] a v staršej

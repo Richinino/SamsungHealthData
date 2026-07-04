@@ -36,43 +36,70 @@ def _read_meta_line(path: Path) -> tuple[str, str | None]:
     return datatype_id, version
 
 
+def _read_header_names(path: Path) -> list[str]:
+    """Prečítaj druhý riadok (hlavičku) a vráť názvy stĺpcov (bez trailing prázdnych)."""
+    with path.open("r", encoding="utf-8-sig", errors="replace") as fh:
+        fh.readline()  # metadáta
+        header = fh.readline().rstrip("\r\n")
+    names = [h.strip() for h in header.split(",")]
+    while names and names[-1] == "":
+        names.pop()
+    return names
+
+
 def read_samsung_csv(path: str | Path) -> SamsungCsv:
     """Prečítaj jeden Samsung Health CSV súbor do :class:`SamsungCsv`.
 
-    Hlavička je na druhom riadku (``skiprows=1``). Stĺpce plné NaN (Samsung necháva
-    v exportoch prázdne trailing stĺpce) sa odstránia. Názvy stĺpcov sa skrátia z
-    plne kvalifikovaných (``com.samsung.health.heart_rate.start_time``) na krátke
-    (``start_time``) pre pohodlnejšiu prácu, s ponechaním pôvodných v ``df.attrs``.
+    Samsung dáva na koniec dátových riadkov **čiarku navyše**, takže riadky majú o
+    pole viac než hlavička; pandas by inak vzal prvý stĺpec ako index a **posunul**
+    všetky stĺpce (hlavičky by nesedeli s dátami). Preto čítame hlavičku ručne a
+    dáta **pozične** (``header=None``) a názvy priradíme na správne stĺpce. Názvy sa
+    skracujú z plne kvalifikovaných (``com.samsung.health.heart_rate.start_time``) na
+    krátke (``start_time``); originály sú v ``df.attrs``.
     """
     path = Path(path)
     datatype_id, version = _read_meta_line(path)
+    header_names = _read_header_names(path)
 
-    # C engine (default) má robustnejší CSV stavový automat než python engine —
-    # správne zvláda polia s vnorenými úvodzovkami a novými riadkami (binning JSON,
-    # location_data), ktoré inak zlepia celý súbor do jedného „riadku".
     read_kwargs = dict(
-        skiprows=1,
+        skiprows=2,           # preskoč metadáta + hlavičku, čítaj pozične
+        header=None,
         dtype=str,
-        keep_default_na=True,
         na_values=[""],
         encoding="utf-8-sig",
-        on_bad_lines="warn",  # nezahadzuj potichu — signalizuj problémové riadky
+        on_bad_lines="warn",
     )
     try:
         df = pd.read_csv(path, engine="c", **read_kwargs)
     except Exception:
-        # fallback na tolerantnejší python engine pri nezvyčajnom formáte
         df = pd.read_csv(path, engine="python", **read_kwargs)
-    # zahoď úplne prázdne stĺpce (Samsung trailing čiarky)
-    df = df.dropna(axis=1, how="all")
-    df = df.loc[:, [c for c in df.columns if not str(c).startswith("Unnamed")]]
 
-    original_cols = list(df.columns)
-    df.columns = [_short_col(c) for c in df.columns]
+    # zarovnaj názvy hlavičky na dátové stĺpce (prebytočné trailing polia zahoď)
+    n = min(len(header_names), df.shape[1])
+    df = df.iloc[:, :n]
+    original_cols = header_names[:n]
+    df.columns = _dedupe(_short_col(c) for c in original_cols)
+    # zahoď úplne prázdne stĺpce (napr. trailing)
+    df = df.dropna(axis=1, how="all")
+
     df.attrs["original_columns"] = dict(zip(df.columns, original_cols))
     df.attrs["datatype_id"] = datatype_id
 
     return SamsungCsv(datatype_id=datatype_id, version=version, df=df, source=path)
+
+
+def _dedupe(names) -> list[str]:
+    """Zabezpeč jedinečné názvy stĺpcov (kolízie po skrátení dostanú príponu _2, _3…)."""
+    seen: dict[str, int] = {}
+    out: list[str] = []
+    for name in names:
+        if name in seen:
+            seen[name] += 1
+            out.append(f"{name}_{seen[name]}")
+        else:
+            seen[name] = 1
+            out.append(name)
+    return out
 
 
 def _short_col(col: str) -> str:
